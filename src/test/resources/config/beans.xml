@@ -9,18 +9,20 @@
 
     <bean id="springApplicationContext" class="net.es.nsi.dds.spring.SpringApplicationContext" scope="singleton" />
 
-    <bean id="httpConfigProvider" class="net.es.nsi.dds.config.http.JsonHttpConfigProvider" init-method="loadConfig" scope="singleton">
-        <property name="filename" value="#{ systemProperties['configPath'] }http.json"/>
-    </bean>
-
-    <bean id="ddsServer" class="net.es.nsi.dds.server.DdsServer" scope="singleton">
-        <constructor-arg index="0" ref="httpConfigProvider"/>
-    </bean>
-
-    <bean id="restClient" class="net.es.nsi.dds.jersey.RestClient" scope="singleton" />
-
     <bean id="ddsConfiguration" class="net.es.nsi.dds.dao.DdsConfiguration" init-method="load" scope="singleton">
         <property name="filename" value="#{ systemProperties['ddsConfigFile'] }"/>
+    </bean>
+
+    <bean id="restClient" class="net.es.nsi.dds.client.RestClient" scope="singleton">
+        <constructor-arg index="0" ref="ddsConfiguration"/>
+    </bean>
+    
+    <bean id="authorizationProvider" class="net.es.nsi.dds.authorization.DnAuthorizationProvider" scope="singleton">
+        <constructor-arg index="0" ref="ddsConfiguration"/>
+    </bean>
+
+    <bean id="ddsServer" class="net.es.nsi.dds.server.DdsServer" scope="singleton" depends-on="authorizationProvider">
+        <constructor-arg index="0" ref="ddsConfiguration"/>
     </bean>
 
     <bean id="cacheProfile" class="net.es.nsi.dds.dao.CacheProfile" scope="singleton">
@@ -78,6 +80,7 @@
         <constructor-arg index="1" ref="ddsConfiguration"/>
         <property name="poolSize" value="5"/>
         <property name="interval" value="1200"/>
+        <property name="refresh" value="10"/>
     </bean>
 
     <bean id="registrationRouter" class="net.es.nsi.dds.actors.RegistrationRouter" scope="singleton" lazy-init="true">
@@ -95,6 +98,7 @@
         <constructor-arg index="3" ref="documentCache"/>
         <constructor-arg index="4" ref="restClient"/>
         <property name="poolSize" value="5"/>
+        <property name="notificationSize" value="5"/>
     </bean>
 
     <bean id="ddsActorController" class="net.es.nsi.dds.actors.DdsActorController" init-method="init" scope="singleton" depends-on="remoteSubscriptionCache, ddsServer">

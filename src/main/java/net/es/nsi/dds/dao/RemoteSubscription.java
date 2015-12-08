@@ -6,7 +6,7 @@ package net.es.nsi.dds.dao;
 
 import java.io.Serializable;
 import java.util.Date;
-import net.es.nsi.dds.api.jaxb.SubscriptionType;
+import net.es.nsi.dds.jaxb.dds.SubscriptionType;
 
 /**
  *
@@ -18,10 +18,10 @@ public class RemoteSubscription implements Serializable {
     private String ddsURL;
     private SubscriptionType subscription;
 
-    private Date created = new Date(0);
-    private Date lastModified = new Date(0);
-    private Date lastAudit = new Date(0);
-    private Date lastSuccessfulAudit = new Date(0);
+    private final Date created = new Date(0);
+    private final Date lastModified = new Date(0);
+    private final Date lastAudit = new Date(0);
+    private final Date lastSuccessfulAudit = new Date(0);
 
     /**
      * @return the ddsURL

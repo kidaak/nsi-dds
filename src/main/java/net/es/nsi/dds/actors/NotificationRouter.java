@@ -1,12 +1,5 @@
-/*
- * To change this template, choose Tools | Templates
- * and open the template in the editor.
- */
 package net.es.nsi.dds.actors;
 
-import net.es.nsi.dds.messages.Notification;
-import net.es.nsi.dds.messages.DocumentEvent;
-import net.es.nsi.dds.messages.SubscriptionEvent;
 import akka.actor.ActorRef;
 import akka.actor.Cancellable;
 import akka.actor.Props;
@@ -20,29 +13,36 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import net.es.nsi.dds.client.RestClient;
 import net.es.nsi.dds.dao.DdsConfiguration;
-import net.es.nsi.dds.api.jaxb.DocumentEventType;
+import net.es.nsi.dds.dao.DocumentCache;
+import net.es.nsi.dds.jaxb.dds.DocumentEventType;
+import net.es.nsi.dds.messages.DocumentEvent;
+import net.es.nsi.dds.messages.Notification;
+import net.es.nsi.dds.messages.StartMsg;
+import net.es.nsi.dds.messages.SubscriptionEvent;
 import net.es.nsi.dds.provider.DiscoveryProvider;
 import net.es.nsi.dds.provider.Document;
-import net.es.nsi.dds.dao.DocumentCache;
 import net.es.nsi.dds.provider.Subscription;
-import net.es.nsi.dds.jersey.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.concurrent.duration.Duration;
 
 /**
+ * This Notification Router will route notification messages to the target
+ * actors based on notification type.
  *
  * @author hacksaw
  */
 public class NotificationRouter extends UntypedActor {
     private final Logger log = LoggerFactory.getLogger(getClass());
-    private DdsActorSystem ddsActorSystem;
-    private DdsConfiguration discoveryConfiguration;
-    private DiscoveryProvider discoveryProvider;
-    private DocumentCache documentCache;
-    private RestClient restClient;
+    private final DdsActorSystem ddsActorSystem;
+    private final DdsConfiguration discoveryConfiguration;
+    private final DiscoveryProvider discoveryProvider;
+    private final DocumentCache documentCache;
+    private final RestClient restClient;
     private int poolSize;
+    private int notificationSize;
     private Router router;
 
     public NotificationRouter(DdsActorSystem ddsActorSystem,
@@ -61,7 +61,7 @@ public class NotificationRouter extends UntypedActor {
     public void preStart() {
         List<Routee> routees = new ArrayList<>();
         for (int i = 0; i < getPoolSize(); i++) {
-            ActorRef r = getContext().actorOf(Props.create(NotificationActor.class, discoveryConfiguration, restClient));
+            ActorRef r = getContext().actorOf(Props.create(NotificationActor.class, discoveryConfiguration.getNsaId(), restClient));
             getContext().watch(r);
             routees.add(new ActorRefRoutee(r));
         }
@@ -73,13 +73,13 @@ public class NotificationRouter extends UntypedActor {
         if (msg instanceof DocumentEvent) {
             // We have a document event.
             DocumentEvent de = (DocumentEvent) msg;
-            log.debug("NotificationRouter: document event " + de.getEvent() + ", id="  + de.getDocument().getId());
+            log.debug("NotificationRouter: document event {}, id={}", de.getEvent(), de.getDocument().getId());
             routeDocumentEvent(de);
         }
         else if (msg instanceof SubscriptionEvent) {
             // We have a subscription event.
             SubscriptionEvent se = (SubscriptionEvent) msg;
-            log.debug("NotificationRouter: subscription event id=" + se.getSubscription().getId());
+            log.debug("NotificationRouter: subscription event id={}, requesterId={}", se.getSubscription().getId(), se.getSubscription().getSubscription().getRequesterId());
             routeSubscriptionEvent(se);
         }
         else if (msg instanceof Terminated) {
@@ -89,8 +89,11 @@ public class NotificationRouter extends UntypedActor {
             getContext().watch(r);
             router = router.addRoutee(new ActorRefRoutee(r));
         }
+        else if (msg instanceof StartMsg) {
+            // We ignore these for now as we have no specific start task.
+        }
         else {
-            log.debug("NotificationRouter: unhandled event." + msg.getClass().getName());
+            log.debug("NotificationRouter: unhandled event = {}", msg.getClass().getName());
             unhandled(msg);
         }
     }
@@ -98,32 +101,38 @@ public class NotificationRouter extends UntypedActor {
     private void routeDocumentEvent(DocumentEvent de) {
         Collection<Subscription> subscriptions = discoveryProvider.getSubscriptions(de);
 
-        log.debug("routeDocumentEvent: event=" + de.getEvent() + ", documentId=" + de.getDocument().getId());
+        log.debug("routeDocumentEvent: event={}, documentId={}", de.getEvent(), de.getDocument().getId());
 
         // We need to sent the list of matching documents to the callback
         // related to this subscription.  Only send if there is no pending
         // subscription event.
-        for (Subscription subscription : subscriptions) {
-            log.debug("routeDocumentEvent: id=" + de.getDocument().getId() + ", subscription=" + subscription.getId() + ", endpoint=" + subscription.getSubscription().getCallback());
-            if (subscription.getAction() == null) {
-                Notification notification = new Notification();
-                notification.setEvent(de.getEvent());
-                notification.setSubscription(subscription);
-                Collection<Document> documents = new ArrayList<>();
-                documents.add(de.getDocument());
-                notification.setDocuments(documents);
-                router.route(notification, getSender());
-            }
-        }
+        subscriptions.stream().map((subscription) -> {
+            log.debug("routeDocumentEvent: id={}, subscription={}, endpoint={}", de.getDocument().getId(), subscription.getId(), subscription.getSubscription().getCallback());
+            return subscription;
+        }).filter((subscription) -> (subscription.getAction() == null)).map((subscription) -> {
+            Notification notification = new Notification();
+            notification.setEvent(de.getEvent());
+            notification.setSubscription(subscription);
+            return notification;
+        }).map((notification) -> {
+            Collection<Document> documents = new ArrayList<>();
+            documents.add(de.getDocument());
+            notification.setDocuments(documents);
+            return notification;
+        }).forEach((notification) -> {
+            router.route(notification, getSender());
+        });
     }
 
     private void routeSubscriptionEvent(SubscriptionEvent se) {
-
         // TODO: Apply subscription filter to these documents.
         Collection<Document> documents = documentCache.values();
 
         // Clean up our trigger event.
-        log.debug("routeSubscriptionEvent: event=" + se.getEvent() + ", documents=" + documents.size() + ", size=" + discoveryConfiguration.getNotificationSize() + ", action=" + se.getSubscription().getAction().isCancelled());
+        log.debug("routeSubscriptionEvent: requesterId={}, event={}, documents={}, postSize={}, action={}",
+                se.getSubscription().getSubscription().getRequesterId(),
+                se.getEvent(), documents.size(), notificationSize,
+                se.getSubscription().getAction().isCancelled());
         se.getSubscription().setAction(null);
 
         // Send documents in chunks of 10.
@@ -136,7 +145,7 @@ public class NotificationRouter extends UntypedActor {
             notification.setEvent(DocumentEventType.ALL);
             notification.setSubscription(se.getSubscription());
             ArrayList<Document> docs = new ArrayList<>();
-            for (int i = 0; i < discoveryConfiguration.getNotificationSize()
+            for (int i = 0; i < notificationSize
                     && current < toArray.length; i++) {
                 docs.add((Document) toArray[current]);
                 current++;
@@ -167,5 +176,19 @@ public class NotificationRouter extends UntypedActor {
 
     public void sendNotification(Object message) {
         this.getSelf().tell(message, null);
+    }
+
+    /**
+     * @return the notificationSize
+     */
+    public int getNotificationSize() {
+        return notificationSize;
+    }
+
+    /**
+     * @param notificationSize the notificationSize to set
+     */
+    public void setNotificationSize(int notificationSize) {
+        this.notificationSize = notificationSize;
     }
 }

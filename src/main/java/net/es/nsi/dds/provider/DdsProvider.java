@@ -21,22 +21,22 @@ import javax.xml.bind.JAXBException;
 import javax.xml.datatype.DatatypeConfigurationException;
 import javax.xml.datatype.DatatypeConstants;
 import javax.xml.datatype.XMLGregorianCalendar;
-import net.es.nsi.dds.dao.DdsParser;
 import net.es.nsi.dds.actors.DdsActorController;
 import net.es.nsi.dds.api.DiscoveryError;
 import net.es.nsi.dds.api.Exceptions;
 import net.es.nsi.dds.dao.DdsConfiguration;
 import net.es.nsi.dds.dao.DocumentCache;
-import net.es.nsi.dds.api.jaxb.DocumentEventType;
-import net.es.nsi.dds.api.jaxb.DocumentType;
-import net.es.nsi.dds.api.jaxb.FilterType;
-import net.es.nsi.dds.api.jaxb.NotificationType;
-import net.es.nsi.dds.api.jaxb.ObjectFactory;
-import net.es.nsi.dds.api.jaxb.SubscriptionRequestType;
-import net.es.nsi.dds.api.jaxb.SubscriptionType;
+import net.es.nsi.dds.jaxb.DdsParser;
+import net.es.nsi.dds.jaxb.dds.DocumentEventType;
+import net.es.nsi.dds.jaxb.dds.DocumentType;
+import net.es.nsi.dds.jaxb.dds.FilterType;
+import net.es.nsi.dds.jaxb.dds.NotificationType;
+import net.es.nsi.dds.jaxb.dds.ObjectFactory;
+import net.es.nsi.dds.jaxb.dds.SubscriptionRequestType;
+import net.es.nsi.dds.jaxb.dds.SubscriptionType;
 import net.es.nsi.dds.messages.DocumentEvent;
 import net.es.nsi.dds.messages.SubscriptionEvent;
-import net.es.nsi.dds.schema.XmlUtilities;
+import net.es.nsi.dds.util.XmlUtilities;
 import net.es.nsi.dds.spring.SpringApplicationContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,16 +54,17 @@ public class DdsProvider implements DiscoveryProvider {
     private DdsConfiguration configReader;
 
     // In-memory document cache.
-    private DocumentCache documentCache;
+    private final DocumentCache documentCache;
 
     // Local document repository for persistent document storage.
-    private DocumentCache documentRepository;
+    private final DocumentCache documentRepository;
 
     // The actor system used to send notifications.
-    private DdsActorController ddsActorController;
+    private final DdsActorController ddsActorController;
 
-    // In-memory subscription cache indexed by subscriptionId.
-    private Map<String, Subscription> subscriptions = new ConcurrentHashMap<>();
+    // In-memory subscription cache indexed by subscriptionId.  These are
+    // subscriptions from remote DDS servers.
+    private final Map<String, Subscription> subscriptions = new ConcurrentHashMap<>();
 
     public DdsProvider(DdsConfiguration configuration, DocumentCache documentCache, DocumentCache documentRepository, DdsActorController ddsActorController) {
         this.configReader = configuration;
@@ -110,13 +111,15 @@ public class DdsProvider implements DiscoveryProvider {
 
     @Override
     public Subscription addSubscription(SubscriptionRequestType request, String encoding) {
+        log.debug("DdsProvider.addSubscription: requesterId=" + request.getRequesterId());
+
         // Populate a subscription object.
         Subscription subscription = new Subscription(request, encoding, configReader.getBaseURL());
 
         // Save the subscription.
         subscriptions.put(subscription.getId(), subscription);
 
-        // Now we need to schedule the send of the initail set of matching
+        // Now we need to schedule the send of the initial set of matching
         // documents in a notification to this subscription.  We delay the
         // send so that the requester has time to return and store the
         // subscription identifier.
@@ -125,6 +128,8 @@ public class DdsProvider implements DiscoveryProvider {
         se.setSubscription(subscription);
         Cancellable scheduleOnce = ddsActorController.scheduleNotification(se, 5);
         subscription.setAction(scheduleOnce);
+
+        log.debug("DdsProvider.addSubscription: schedule notification delivery for " + subscription.getId());
 
         return subscription;
     }
@@ -246,7 +251,7 @@ public class DdsProvider implements DiscoveryProvider {
     }
 
     @Override
-    public void processNotification(NotificationType notification) {
+    public void processNotification(NotificationType notification) throws WebApplicationException {
         log.debug("processNotification: event=" + notification.getEvent() + ", discovered=" + notification.getDiscovered());
 
         // TODO: We discard the event type and discovered time, however, the
@@ -283,6 +288,8 @@ public class DdsProvider implements DiscoveryProvider {
 
     @Override
     public Document addDocument(DocumentType request, Source context) throws WebApplicationException {
+        log.debug("addDocument: " + request.getId());
+
         // Create and populate our internal document.
         Document document = new Document(request, configReader.getBaseURL());
 
@@ -633,44 +640,40 @@ public class DdsProvider implements DiscoveryProvider {
 
     public Collection<Document> getDocumentsByDate(Date lastDiscovered, Collection<Document> input) {
         Collection<Document> output = new ArrayList<>();
-        for (Document document : input) {
-            if (document.getLastDiscovered().after(lastDiscovered)) {
-                output.add(document);
-            }
-        }
+        input.stream().filter((document) -> (document.getLastDiscovered().after(lastDiscovered)))
+                .forEach((document) -> {
+            output.add(document);
+        });
 
         return output;
     }
 
     public Collection<Document> getDocumentsByNsa(String nsa, Collection<Document> input) {
         Collection<Document> output = new ArrayList<>();
-        for (Document document : input) {
-            if (document.getDocument().getNsa().equalsIgnoreCase(nsa)) {
-                output.add(document);
-            }
-        }
+        input.stream().filter((document) -> (document.getDocument().getNsa().equalsIgnoreCase(nsa)))
+                .forEach((document) -> {
+            output.add(document);
+        });
 
         return output;
     }
 
     public Collection<Document> getDocumentsByType(String type, Collection<Document> input) {
         Collection<Document> output = new ArrayList<>();
-        for (Document document : input) {
-            if (document.getDocument().getType().equalsIgnoreCase(type)) {
-                output.add(document);
-            }
-        }
+        input.stream().filter((document) -> (document.getDocument().getType().equalsIgnoreCase(type)))
+                .forEach((document) -> {
+            output.add(document);
+        });
 
         return output;
     }
 
     public Collection<Document> getDocumentsById(String id, Collection<Document> input) {
         Collection<Document> output = new ArrayList<>();
-        for (Document document : input) {
-            if (document.getDocument().getId().equalsIgnoreCase(id)) {
-                output.add(document);
-            }
-        }
+        input.stream().filter((document) -> (document.getDocument().getId().equalsIgnoreCase(id)))
+                .forEach((document) -> {
+            output.add(document);
+        });
 
         return output;
     }
@@ -717,7 +720,7 @@ public class DdsProvider implements DiscoveryProvider {
         for (String filename : xmlFilenames) {
             DocumentType document;
             try {
-                document = DdsParser.getInstance().readDocument(filename);
+                document = DdsParser.getInstance().parseFile(DocumentType.class, filename);
                 if (document == null) {
                     log.error("loadDocuments: Loaded empty document from " + filename);
                     continue;

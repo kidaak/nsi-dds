@@ -7,28 +7,26 @@ package net.es.nsi.dds.agole;
 import akka.actor.UntypedActor;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Date;
 import java.util.List;
+import javax.ws.rs.NotFoundException;
+import javax.xml.bind.JAXBException;
 import javax.xml.datatype.DatatypeConfigurationException;
 import javax.xml.datatype.XMLGregorianCalendar;
-import net.es.nsi.dds.api.jaxb.AnyType;
-import net.es.nsi.dds.api.jaxb.DocumentEventType;
-import net.es.nsi.dds.api.jaxb.DocumentType;
-import net.es.nsi.dds.api.jaxb.FeatureType;
-import net.es.nsi.dds.api.jaxb.InterfaceType;
-import net.es.nsi.dds.api.jaxb.LocationType;
-import net.es.nsi.dds.api.jaxb.NotificationType;
-import net.es.nsi.dds.api.jaxb.NsaType;
-import net.es.nsi.dds.api.jaxb.ObjectFactory;
-import net.es.nsi.dds.provider.DdsProvider;
-import net.es.nsi.dds.api.jaxb.NmlLifeTimeType;
-import net.es.nsi.dds.api.jaxb.NmlLocationType;
-import net.es.nsi.dds.api.jaxb.NmlNSARelationType;
-import net.es.nsi.dds.api.jaxb.NmlNSAType;
-import net.es.nsi.dds.api.jaxb.NmlServiceType;
-import net.es.nsi.dds.api.jaxb.NmlTopologyType;
-import net.es.nsi.dds.schema.NsiConstants;
-import net.es.nsi.dds.schema.XmlUtilities;
+import net.es.nsi.dds.jaxb.nml.NmlLifeTimeType;
+import net.es.nsi.dds.jaxb.nml.NmlLocationType;
+import net.es.nsi.dds.jaxb.nml.NmlNSARelationType;
+import net.es.nsi.dds.jaxb.nml.NmlNSAType;
+import net.es.nsi.dds.jaxb.nml.NmlServiceType;
+import net.es.nsi.dds.jaxb.nml.NmlTopologyType;
+import net.es.nsi.dds.jaxb.nsa.FeatureType;
+import net.es.nsi.dds.jaxb.nsa.InterfaceType;
+import net.es.nsi.dds.jaxb.nsa.LocationType;
+import net.es.nsi.dds.jaxb.nsa.NsaType;
+import net.es.nsi.dds.jaxb.nsa.PeerRoleEnum;
+import net.es.nsi.dds.jaxb.nsa.PeersWithType;
+import net.es.nsi.dds.lib.DocHelper;
+import net.es.nsi.dds.util.NsiConstants;
+import net.es.nsi.dds.util.XmlUtilities;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,9 +35,10 @@ import org.slf4j.LoggerFactory;
  * @author hacksaw
  */
 public class AgoleDiscoveryActor extends UntypedActor {
-   
+
     private final Logger log = LoggerFactory.getLogger(getClass());
-    private final ObjectFactory factory = new ObjectFactory();
+    private final net.es.nsi.dds.jaxb.nsa.ObjectFactory nsaFactory = new net.es.nsi.dds.jaxb.nsa.ObjectFactory();
+    private final net.es.nsi.dds.jaxb.nml.ObjectFactory nmlFactory = new net.es.nsi.dds.jaxb.nml.ObjectFactory();
 
     @Override
     public void preStart() {
@@ -49,56 +48,61 @@ public class AgoleDiscoveryActor extends UntypedActor {
     public void onReceive(Object msg) {
         if (msg instanceof AgoleDiscoveryMsg) {
             AgoleDiscoveryMsg message = (AgoleDiscoveryMsg) msg;
-            
-            // Read the NML topology document.
-            if (discoverTopology(message) == false) {
-                // No update so return.
+
+            try {
+                // Read the NML topology document.
+                if (discoverTopology(message) == false) {
+                    // No update so return.
+                    return;
+                }
+            }
+            catch (Exception ex) {
+                log.error("onReceive: Caught exception", ex);
                 return;
             }
-            
+
             // Send an updated discovery message back to the router.
             getSender().tell(message, getSelf());
         } else {
             unhandled(msg);
         }
     }
- 
+
     private boolean discoverTopology(AgoleDiscoveryMsg message) {
-        String id = message.getId();
         String url = message.getTopologyURL();
 
-        log.debug("discover: topology id=" + id + ", url=" + url);
-        
+        log.debug("discover: topology url={}", url);
+
         if (url == null || url.isEmpty()) {
             return false;
         }
-        
-        AgoleTopologyReader topologyReader = new AgoleTopologyReader(id, url, message.getTopologyLastModifiedTime());
+
+        AgoleTopologyReader topologyReader = new AgoleTopologyReader(url, message.getTopologyLastModifiedTime());
         NmlNSAType nsa;
         try {
             nsa = topologyReader.readNsaTopology();
-        } catch (Exception ex) {
-            log.error("discoverTopology: failed to read topology for id=" + id + ", url=" + url, ex);
+        } catch (NotFoundException | IllegalStateException | JAXBException ex) {
+            log.error("discoverTopology: failed to read topology for url={}", url, ex);
             return false;
         }
-        
+
         if (nsa == null) {
-            log.debug("discoverTopology: Topology document not modified for id=" + id + ", url=" + url);
+            log.debug("discoverTopology: Topology document not modified for url={}", url);
             return false;
         }
-        
+
         XMLGregorianCalendar lastDiscovered;
         try {
             lastDiscovered = XmlUtilities.xmlGregorianCalendar();
         } catch (DatatypeConfigurationException ex) {
-            log.error("discoverTopology: Failed to create a lastDiscovered value, id=" + nsa.getId(), ex);
+            log.error("discoverTopology: Failed to create a lastDiscovered value, id={}", nsa.getId(), ex);
             return false;
         }
-        
+
         // We need to create both the NSA Discovery and Topology documents from
         // the contents of this single document.
         NsaType nsaDocument = parseNsa(nsa);
-        if (nsaDocument == null || !addNsaDocument(nsaDocument, lastDiscovered)) {
+        if (nsaDocument == null || !DocHelper.addNsaDocument(nsaDocument, lastDiscovered)) {
             return false;
         }
 
@@ -108,138 +112,35 @@ public class AgoleDiscoveryActor extends UntypedActor {
         message.setNsaId(nsa.getId());
 
         Collection<NmlTopologyType> nmlDocuments = parseTopology(nsa, nsaDocument);
-        for (NmlTopologyType nmlDocument : nmlDocuments) {
+        nmlDocuments.stream().forEach((nmlDocument) -> {
             try {
-                addTopologyDocument(nmlDocument, lastDiscovered, nsa.getId());
+                DocHelper.addTopologyDocument(nmlDocument, lastDiscovered, nsa.getId());
             }
             catch (Exception ex) {
-                log.error("discoverTopology: Failed to topology document, nsaId=" + nsa.getId() + ", networkId=" + nmlDocument.getId());
+                log.error("discoverTopology: Failed to topology document, nsaId={}, networkId={}", nsa.getId(), nmlDocument.getId());
             }
-        }
+        });
 
         // Now we retrieve the associated topology document.
-        log.debug("discoverTopology: existing.");
-        
+        log.debug("discoverTopology: exiting.");
+
         return true;
     }
-    
-    private boolean addNsaDocument(NsaType nsa, XMLGregorianCalendar discovered) {
-        // Now we add the NSA document into the DDS.
-        DocumentType document = factory.createDocumentType();
 
-        // Set the naming attributes.
-        document.setId(nsa.getId());
-        document.setType(NsiConstants.NSI_DOC_TYPE_NSA_V1);
-        document.setNsa(nsa.getId());
-
-        // We need the version of the document.
-        XMLGregorianCalendar version = nsa.getVersion();
-        if (version == null || !version.isValid()) {
-            
-        }
-        else {
-            document.setVersion(version);
-        }
-
-        // If there is no expires time specified then it is infinite.
-        if (nsa.getExpires() == null || !nsa.getExpires().isValid()) {
-            // No expire value provided so make one.
-            Date date = new Date(System.currentTimeMillis() + XmlUtilities.ONE_YEAR);
-            XMLGregorianCalendar xmlGregorianCalendar;
-            try {
-                xmlGregorianCalendar = XmlUtilities.xmlGregorianCalendar(date);
-            } catch (DatatypeConfigurationException ex) {
-                log.error("discover: NSA document does not contain an expires date, id=" + nsa.getId());
-                return false;
-            }
-
-            document.setExpires(xmlGregorianCalendar);
-        }
-        else {
-            document.setExpires(nsa.getExpires());
-        }
-
-        // Add the NSA document into the entry.
-        AnyType any = factory.createAnyType();
-        any.getAny().add(factory.createNsa(nsa));
-        document.setContent(any);
-        
-        // Try to add the document as a notification of document change.
-        NotificationType notify = factory.createNotificationType();
-        notify.setEvent(DocumentEventType.ALL);
-        notify.setDiscovered(discovered);
-        notify.setDocument(document);
-        
-        DdsProvider.getInstance().processNotification(notify);
-        
-        return true;
-    }
-    
-    private boolean addTopologyDocument(NmlTopologyType topology, XMLGregorianCalendar discovered, String nsaId) {
-        
-        // Now we add the NSA document into the DDS.
-        DocumentType document = factory.createDocumentType();
-
-        // Set the naming attributes.
-        document.setId(topology.getId());
-        document.setType(NsiConstants.NSI_DOC_TYPE_TOPOLOGY_V2);
-        document.setNsa(nsaId);
-
-        // We need the version of the document.
-        document.setVersion(topology.getVersion());
-
-        // If there is no expires time specified then it is infinite.
-        if (topology.getLifetime() == null || topology.getLifetime().getEnd() == null || !topology.getLifetime().getEnd().isValid()) {
-            // No expire value provided so make one.
-            Date date = new Date(System.currentTimeMillis() + XmlUtilities.ONE_YEAR);
-            XMLGregorianCalendar xmlGregorianCalendar;
-            try {
-                xmlGregorianCalendar = XmlUtilities.xmlGregorianCalendar(date);
-            } catch (DatatypeConfigurationException ex) {
-                log.error("discover: Topology document does not contain an expires date, id=" + topology.getId());
-                return false;
-            }
-
-            document.setExpires(xmlGregorianCalendar);
-            NmlLifeTimeType lifetime = factory.createNmlLifeTimeType();
-            lifetime.setStart(topology.getVersion());
-            lifetime.setEnd(xmlGregorianCalendar);
-            topology.setLifetime(lifetime);
-        }
-        else {
-            document.setExpires(topology.getLifetime().getEnd());
-        }
-
-        // Add the NSA document into the entry.
-        AnyType any = factory.createAnyType();
-        any.getAny().add(factory.createTopology(topology));
-        document.setContent(any);
-        
-        // Try to add the document as a notification of document change.
-        NotificationType notify = factory.createNotificationType();
-        notify.setEvent(DocumentEventType.ALL);
-        notify.setDiscovered(discovered);
-        notify.setDocument(document);
-        
-        DdsProvider.getInstance().processNotification(notify);
-        
-        return true;
-    }
-    
     private NsaType parseNsa(NmlNSAType nsa) {
         // We need to create both the NSA Discovery and Topology documents from
         // the contents of this single document.
-        NsaType nsaDocument = factory.createNsaType();
+        NsaType nsaDocument = nsaFactory.createNsaType();
         nsaDocument.setId(nsa.getId());
         nsaDocument.setVersion(nsa.getVersion());
         nsaDocument.setName(nsa.getName());
         if (nsa.getLifetime() != null) {
             nsaDocument.setExpires(nsa.getLifetime().getEnd());
         }
-        
+
         NmlLocationType location = nsa.getLocation();
         if (location != null) {
-            LocationType loc = factory.createLocationType();
+            LocationType loc = nsaFactory.createLocationType();
             loc.setAltitude(location.getAlt());
             loc.setLatitude(location.getLat());
             loc.setLongitude(location.getLong());
@@ -247,15 +148,15 @@ public class AgoleDiscoveryActor extends UntypedActor {
             loc.setUnlocode(location.getUnlocode());
             nsaDocument.setLocation(loc);
         }
-        
+
         // Add the uPA NSA feature.
-        FeatureType upa = factory.createFeatureType();
+        FeatureType upa = nsaFactory.createFeatureType();
         upa.setType(NsiConstants.NSI_CS_UPA);
         List<FeatureType> feature = nsaDocument.getFeature();
         feature.add(upa);
-        
+
         //nsaDocument.setAdminContact(null);
-        
+
         // Parse the NML peersWith relationship.
         try {
             nsaDocument.getPeersWith().addAll(parsePeersWith(nsa.getRelation()));
@@ -264,7 +165,7 @@ public class AgoleDiscoveryActor extends UntypedActor {
             // Ignore the error for now.
             log.error("discoverTopology: failed to add NML peersWith relationship.", ex);
         }
-        
+
         // Parse the NML Service element into an interface element.
         try {
             nsaDocument.getInterface().addAll(parseService(nsa.getService()));
@@ -273,53 +174,60 @@ public class AgoleDiscoveryActor extends UntypedActor {
             // Ignore the error for now.
             log.error("discoverTopology: failed to add NML Service.", ex);
         }
-        
+
         // We pull the networkId out of the <Topology> elements.
         List<String> networkId = nsaDocument.getNetworkId();
-        for (NmlTopologyType topology : nsa.getTopology()) {
+        nsa.getTopology().stream().forEach((topology) -> {
             networkId.add(topology.getId().trim());
-        }
-        
+        });
+
         return nsaDocument;
     }
-    
+
     private Collection<NmlTopologyType> parseTopology(NmlNSAType nmlNsa, NsaType nsaDocument) {
         List<NmlTopologyType> topologies = nmlNsa.getTopology();
-        for (NmlTopologyType topology : topologies) {
+        topologies.stream().map((topology) -> {
             if (topology.getVersion() == null || !topology.getVersion().isValid()) {
                 topology.setVersion(nsaDocument.getVersion());
             }
-            if (topology.getLifetime() == null || topology.getLifetime().getEnd() == null || !topology.getLifetime().getEnd().isValid()) {
-                NmlLifeTimeType lifetime = factory.createNmlLifeTimeType();
-                lifetime.setEnd(nsaDocument.getExpires());
-                topology.setLifetime(lifetime);
-            }
-        }
+            return topology;
+        }).filter((topology) -> (topology.getLifetime() == null || topology.getLifetime().getEnd() == null || !topology.getLifetime().getEnd().isValid())).forEach((topology) -> {
+            NmlLifeTimeType lifetime = nmlFactory.createNmlLifeTimeType();
+            lifetime.setEnd(nsaDocument.getExpires());
+            topology.setLifetime(lifetime);
+        });
         return topologies;
     }
 
-    private Collection<String> parsePeersWith(List<NmlNSARelationType> relationList) {
-        List<String> peersWith = new ArrayList<>();
-        for (NmlNSARelationType relation : relationList) {
-            if (NsiConstants.NML_PEERSWITH_RELATION.equalsIgnoreCase(relation.getType())) {
-                for (NmlNSAType nsa : relation.getNSA()) {
-                    peersWith.add(nsa.getId().trim());
-                }
-            }
-        }
-        
-        return peersWith;
+    private Collection<PeersWithType> parsePeersWith(List<NmlNSARelationType> relationList) {
+        List<PeersWithType> peersWithList = new ArrayList<>();
+        relationList.stream().filter((relation) -> (NsiConstants.NML_PEERSWITH_RELATION.equalsIgnoreCase(relation.getType()))).forEach((relation) -> {
+            relation.getNSA().stream().map((nsa) -> {
+                PeersWithType peersWith = nsaFactory.createPeersWithType();
+                peersWith.setRole(PeerRoleEnum.PA);
+                peersWith.setValue(nsa.getId().trim());
+                return peersWith;
+            }).forEach((peersWith) -> {
+                peersWithList.add(peersWith);
+            });
+        });
+
+        return peersWithList;
     }
 
     private List<InterfaceType> parseService(List<NmlServiceType> services) {
         List<InterfaceType> interfaceList = new ArrayList<>();
-        for (NmlServiceType service : services) {
-            InterfaceType aInterface = factory.createInterfaceType();
+        services.stream().map((service) -> {
+            InterfaceType aInterface = nsaFactory.createInterfaceType();
             aInterface.setHref(service.getLink().trim());
+            return aInterface;
+        }).map((aInterface) -> {
             aInterface.setType(NsiConstants.NSI_CS_PROVIDER_V2);
+            return aInterface;
+        }).forEach((aInterface) -> {
             interfaceList.add(aInterface);
-        }
-        
+        });
+
         return interfaceList;
     }
 }

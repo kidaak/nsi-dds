@@ -1,23 +1,20 @@
 package net.es.nsi.dds.client;
 
 
-import java.net.URI;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import net.es.nsi.dds.config.http.HttpConfig;
-import net.es.nsi.dds.api.jaxb.NotificationListType;
+import net.es.nsi.dds.jaxb.dds.NotificationListType;
 import org.glassfish.grizzly.http.server.HttpServer;
-import org.glassfish.jersey.grizzly2.httpserver.GrizzlyHttpServerFactory;
-import org.glassfish.jersey.moxy.json.MoxyJsonFeature;
-import org.glassfish.jersey.moxy.xml.MoxyXmlFeature;
-import net.es.nsi.dds.jersey.JsonMoxyConfigurationContextResolver;
 import org.glassfish.jersey.filter.LoggingFilter;
+import org.glassfish.jersey.grizzly2.httpserver.GrizzlyHttpServerFactory;
+import org.glassfish.jersey.moxy.xml.MoxyXmlFeature;
 import org.glassfish.jersey.server.ResourceConfig;
 
 public enum TestServer {
     INSTANCE;
 
     private static HttpServer server = null;
-    private static ConcurrentLinkedQueue<NotificationListType> notificationQueue = new ConcurrentLinkedQueue<>();
+    private static final ConcurrentLinkedQueue<NotificationListType> notificationQueue = new ConcurrentLinkedQueue<>();
 
     public boolean pushDdsNotification(NotificationListType notify) {
         return notificationQueue.add(notify);
@@ -38,7 +35,8 @@ public enum TestServer {
     public void start(HttpConfig config) throws IllegalStateException {
         synchronized(this) {
             if (server == null) {
-                server = GrizzlyHttpServerFactory.createHttpServer(URI.create(config.getUrl()), getConfig(config.getPackageName()));
+                server = GrizzlyHttpServerFactory.createHttpServer(config.getURI(), getConfig(config.getPackageName()));
+                System.out.println("TestServer: started HTTP server on " + config.getUrl());
             }
             else {
                 System.err.println("start: server is already started.");
@@ -78,8 +76,6 @@ public enum TestServer {
                 .packages(packageName)
                 .register(DdsNotificationCallback.class) // Remove this if packages gets fixed.
                 .register(new MoxyXmlFeature())
-                .register(new MoxyJsonFeature())
-                .register(new LoggingFilter(java.util.logging.Logger.getGlobal(), true))
-                .registerInstances(new JsonMoxyConfigurationContextResolver());
+                .register(new LoggingFilter(java.util.logging.Logger.getGlobal(), true));
     }
 }

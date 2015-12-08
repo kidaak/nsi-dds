@@ -7,8 +7,9 @@ package net.es.nsi.dds.test;
 import javax.ws.rs.client.Client;
 import javax.ws.rs.client.ClientBuilder;
 import javax.ws.rs.client.WebTarget;
+import net.es.nsi.dds.client.RestClient;
 import net.es.nsi.dds.config.ConfigurationManager;
-import net.es.nsi.dds.jersey.RestClient;
+import net.es.nsi.dds.config.Properties;
 import org.glassfish.jersey.client.ClientConfig;
 
 /**
@@ -21,8 +22,8 @@ public class TestConfig {
     public static final String DEFAULT_DDS_FILE = CONFIG_DIR + "dds.xml";
     private static final String DDS_CONFIG_FILE_ARGNAME = "ddsConfigFile";
 
-    private Client client;
-    private WebTarget target;
+    private final Client client;
+    private final WebTarget target;
 
     public TestConfig() {
         System.setProperty(CONFIG_PATH, CONFIG_DIR);
@@ -32,15 +33,15 @@ public class TestConfig {
                 System.out.println("TestConfig: ConfigurationManager already initialized so shutting down.");
                 ConfigurationManager.INSTANCE.shutdown();
             }
-            ConfigurationManager.INSTANCE.initialize(CONFIG_DIR);
+            System.setProperty(Properties.SYSTEM_PROPERTY_CONFIGDIR, CONFIG_DIR);
+            ConfigurationManager.INSTANCE.initialize();
         }
         catch (Exception ex) {
             System.err.println("TestConfig: failed to initialize ConfigurationManager.");
             ex.printStackTrace();
         }
 
-        ClientConfig clientConfig = new ClientConfig();
-        RestClient.configureClient(clientConfig);
+        ClientConfig clientConfig = RestClient.configureClient();
         client = ClientBuilder.newClient(clientConfig);
 
         target = client.target(ConfigurationManager.INSTANCE.getDdsServer().getUrl());

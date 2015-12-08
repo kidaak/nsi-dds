@@ -3,22 +3,44 @@ package net.es.nsi.dds.dao;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.cert.CertificateException;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
 import javax.xml.bind.JAXBException;
-import net.es.nsi.dds.api.jaxb.DdsConfigurationType;
-import net.es.nsi.dds.api.jaxb.PeerURLType;
+import net.es.nsi.dds.authorization.AccessControlList;
+import net.es.nsi.dds.config.Properties;
+import net.es.nsi.dds.config.http.HttpConfig;
+import net.es.nsi.dds.config.http.HttpsConfig;
+import net.es.nsi.dds.jaxb.ConfigurationParser;
+import net.es.nsi.dds.jaxb.configuration.AccessControlType;
+import net.es.nsi.dds.jaxb.configuration.DdsConfigurationType;
+import net.es.nsi.dds.jaxb.configuration.ObjectFactory;
+import net.es.nsi.dds.jaxb.configuration.PeerURLType;
+import net.es.nsi.dds.jaxb.configuration.SignatureStoreType;
+import net.es.nsi.dds.jaxb.management.LogType;
 import net.es.nsi.dds.management.logs.DdsErrors;
 import net.es.nsi.dds.management.logs.DdsLogger;
+import net.es.nsi.dds.signing.KeyStoreHandler;
 import net.es.nsi.dds.spring.SpringApplicationContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  *
  * @author hacksaw
  */
 public class DdsConfiguration {
+    private final Logger log = LoggerFactory.getLogger(getClass());
     private final DdsLogger ddsLogger = DdsLogger.getLogger();
+    private final ObjectFactory factory = new ObjectFactory();
 
     public static final long MAX_AUDIT_INTERVAL = 86400L; // 24 hours in seconds
     public static final long DEFAULT_AUDIT_INTERVAL = 1200L; // 20 minutes in seconds
@@ -34,14 +56,9 @@ public class DdsConfiguration {
 
     public static final int NOTIFICATIONSIZE_MAX_SIZE = 40;
     public static final int NOTIFICATIONSIZE_DEFAULT_SIZE = 10;
-    public static final int NOTIFICATIONSIZE_MIN_SIZE = 5;
-
-    public static final int PAGESIZE_MAX_SIZE = 100;
-    public static final int PAGESIZE_DEFAULT_SIZE = 50;
-    public static final int PAGESIZE_MIN_SIZE = 5;
+    public static final int NOTIFICATIONSIZE_MIN_SIZE = 1;
 
     private String filename = null;
-
     private long lastModified = 0;
     private String nsaId = null;
     private String baseURL = null;
@@ -52,17 +69,21 @@ public class DdsConfiguration {
     private long expiryInterval = EXPIRE_INTERVAL_DEFAULT;
     private int actorPool = ACTORPOOL_DEFAULT_SIZE;
     private int notificationSize;
-    private int pageSize;
-    private Set<PeerURLType> discoveryURL = new HashSet<>();
+    private HttpConfig httpConfig = null;
+    private Optional<HttpsConfig> clientConfig = Optional.empty();
+    private AccessControlList accessControlList;
+    private Map<String, PeerURLType> discoveryURL = new HashMap<>();
+
+    // Configuration for digital signing of documents populated through Gof3 agents.
+    private boolean sign = false;
+    private KeyStoreHandler signingStore = null;
+    private String signingAlias = null;
 
     public static DdsConfiguration getInstance() {
         DdsConfiguration configurationReader = SpringApplicationContext.getBean("ddsConfiguration", DdsConfiguration.class);
         return configurationReader;
     }
 
-    /**
-     * @return the filename
-     */
     public String getFilename() {
         return filename;
     }
@@ -71,11 +92,13 @@ public class DdsConfiguration {
         this.filename = filename;
     }
 
-    public synchronized void load() throws IllegalArgumentException, JAXBException, IOException, NullPointerException {
+    public synchronized void load() throws IllegalArgumentException, JAXBException, IOException, FileNotFoundException, KeyStoreException, NoSuchAlgorithmException, CertificateException {
+        LogType errorAudit;
+
         // Make sure the condifuration file is set.
         if (getFilename() == null || getFilename().isEmpty()) {
-            ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_FILENAME, "filename", getFilename());
-            throw new IllegalArgumentException();
+            errorAudit = ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_FILENAME, "filename", getFilename());
+            throw new IllegalArgumentException(ddsLogger.logToString(errorAudit));
         }
 
         File file = null;
@@ -97,7 +120,7 @@ public class DdsConfiguration {
         DdsConfigurationType config;
 
         try {
-            config = DdsParser.getInstance().parse(getFilename());
+            config = ConfigurationParser.getInstance().readConfiguration(getFilename());
         }
         catch (IOException io) {
             ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_FILENAME, "filename", getFilename());
@@ -109,40 +132,45 @@ public class DdsConfiguration {
         }
 
         if (config.getNsaId() == null || config.getNsaId().isEmpty()) {
-            ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_PARAMETER, "nsaId", config.getNsaId());
-            throw new FileNotFoundException("Invalid nsaId: " + config.getNsaId());
+            errorAudit = ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_PARAMETER, "nsaId", config.getNsaId());
+            throw new FileNotFoundException(ddsLogger.logToString(errorAudit));
         }
 
         setNsaId(config.getNsaId());
 
         if (config.getBaseURL() == null || config.getBaseURL().isEmpty()) {
-            ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_PARAMETER, "baseURL", config.getBaseURL());
-            throw new FileNotFoundException("Invalid baseURL: " + config.getBaseURL());
+            errorAudit = ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_PARAMETER, "baseURL", config.getBaseURL());
+            throw new FileNotFoundException(ddsLogger.logToString(errorAudit));
         }
 
         setBaseURL(config.getBaseURL());
 
-        // The DocumentCache will created the directoy if not present.
+        // Local document directory option from which we dynamically load files.
         if (config.getDocuments() != null && !config.getDocuments().isEmpty()) {
-            setDocuments(config.getDocuments());
+            // See if the user provided a fully qualified path.
+            setDocuments(fullyQualifyPath(config.getDocuments()));
         }
 
         // The DocumentCache will created the directoy if not present.
         if (config.getCache() != null && !config.getCache().isEmpty()) {
-            setCache(config.getCache());
+            setCache(fullyQualifyPath(config.getCache()));
         }
 
         // The RepositoryCache will created the directoy if not present.
         if (config.getRepository() != null && !config.getRepository().isEmpty()) {
-            setRepository(config.getRepository());
+            setRepository(fullyQualifyPath(config.getRepository()));
         }
 
-        if (config.getAuditInterval() < MIN_AUDIT_INTERVAL || config.getAuditInterval() > MAX_AUDIT_INTERVAL) {
+        if (config.getAuditInterval() == null) {
+            setAuditInterval(DEFAULT_AUDIT_INTERVAL);
+        }
+        else if (config.getAuditInterval() < MIN_AUDIT_INTERVAL || config.getAuditInterval() > MAX_AUDIT_INTERVAL) {
             ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_PARAMETER, "auditInterval", Long.toString(config.getAuditInterval()));
             setAuditInterval(DEFAULT_AUDIT_INTERVAL);
         }
-
-        setAuditInterval(config.getAuditInterval());
+        else {
+            setAuditInterval(config.getAuditInterval());
+        }
 
         if (config.getExpiryInterval() < EXPIRE_INTERVAL_MIN || config.getExpiryInterval() > EXPIRE_INTERVAL_MAX) {
             ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_PARAMETER, "expiryInterval", Long.toString(config.getExpiryInterval()));
@@ -151,12 +179,16 @@ public class DdsConfiguration {
 
         setExpiryInterval(config.getExpiryInterval());
 
-        if (config.getActorPool() < ACTORPOOL_MIN_SIZE || config.getActorPool() > ACTORPOOL_MAX_SIZE) {
+        if (config.getActorPool() == null) {
+            setActorPool(ACTORPOOL_DEFAULT_SIZE);
+        }
+        else if (config.getActorPool() < ACTORPOOL_MIN_SIZE || config.getActorPool() > ACTORPOOL_MAX_SIZE) {
             ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_PARAMETER, "actorPool", Integer.toString(config.getActorPool()));
             setActorPool(ACTORPOOL_DEFAULT_SIZE);
         }
-
-        setActorPool(config.getActorPool());
+        else {
+            setActorPool(config.getActorPool());
+        }
 
         if (config.getBaseURL() == null || config.getBaseURL().isEmpty()) {
             ddsLogger.errorAudit(DdsErrors.DDS_CONFIGURATION_INVALID_PARAMETER, "baseURL=" + config.getBaseURL());
@@ -171,47 +203,66 @@ public class DdsConfiguration {
             setNotificationSize(config.getNotificationSize());
         }
 
-        if (config.getPageSize() < PAGESIZE_MIN_SIZE || config.getPageSize() > PAGESIZE_MAX_SIZE) {
-            setPageSize(PAGESIZE_DEFAULT_SIZE);
-        }
-        else {
-            setPageSize(config.getPageSize());
+        httpConfig = new HttpConfig(config.getServer());
+        if (config.getClient() != null) {
+            clientConfig = Optional.of(new HttpsConfig(config.getClient()));
         }
 
-        for (PeerURLType url : config.getPeerURL()) {
-            discoveryURL.add(url);
+        Optional<AccessControlType> accessControl = Optional.ofNullable(config.getAccessControl());
+        if (!accessControl.isPresent()) {
+            AccessControlType ac = factory.createAccessControlType();
+            accessControl = Optional.of(ac);
+        }
+
+        accessControlList = new AccessControlList(accessControl.get());
+
+        // Load the peer discovery URL.
+        discoveryURL = config.getPeerURL().stream().collect(
+            Collectors.toMap(peer -> peer.getType() + "/" + peer.getValue(), peer -> peer)
+        );
+
+        // Populate digital signing information for Gof3 documents.
+        Optional<SignatureStoreType> signature = Optional.ofNullable(config.getSignature());
+        if (signature.isPresent()) {
+            if (signature.get().isSign()) {
+                signingAlias = Optional.ofNullable(signature.get().getAlias()).orElseThrow(new IllegalArgumentExceptionSupplier("signing alias is required"));
+                signingStore = new KeyStoreHandler(
+                        fullyQualifyPath(Optional.ofNullable(signature.get().getFile()).orElseThrow(new IllegalArgumentExceptionSupplier("signing keystore filename is required"))),
+                        signature.get().getPassword(),
+                        signature.get().getType());
+                sign = signature.get().isSign();
+            }
         }
 
         lastModified = lastMod;
     }
 
-    public boolean isDocumentsConfigured() {
-        if (documents == null || documents.isEmpty()) {
-            return false;
+    private String fullyQualifyPath(String file) {
+        Path path = Paths.get(file);
+        if (!path.isAbsolute()) {
+            String basedir = System.getProperty(Properties.SYSTEM_PROPERTY_BASEDIR);
+            path = Paths.get(basedir, file);
         }
 
-        return true;
+        return path.toString();
+    }
+
+    public boolean isDocumentsConfigured() {
+        return !(documents == null || documents.isEmpty());
     }
 
     public boolean isCacheConfigured() {
-        if (cache == null || cache.isEmpty()) {
-            return false;
-        }
-
-        return true;
+        return !(cache == null || cache.isEmpty());
     }
 
     public boolean isRepositoryConfigured() {
-        if (repository == null || repository.isEmpty()) {
-            return false;
-        }
-
-        return true;
+        return !(repository == null || repository.isEmpty());
     }
 
     /**
      * @return the auditInterval
      */
+    @Deprecated
     public long getAuditInterval() {
         return auditInterval;
     }
@@ -219,6 +270,7 @@ public class DdsConfiguration {
     /**
      * @param auditInterval the auditInterval to set
      */
+    @Deprecated
     public void setAuditInterval(long auditInterval) {
         this.auditInterval = auditInterval;
     }
@@ -240,8 +292,8 @@ public class DdsConfiguration {
     /**
      * @return the discoveryURL
      */
-    public Set<PeerURLType> getDiscoveryURL() {
-        return Collections.unmodifiableSet(discoveryURL);
+    public Collection<PeerURLType> getDiscoveryURL() {
+        return Collections.unmodifiableCollection(discoveryURL.values());
     }
 
     /**
@@ -331,6 +383,7 @@ public class DdsConfiguration {
     /**
      * @return the notificationSize
      */
+    @Deprecated
     public int getNotificationSize() {
         return notificationSize;
     }
@@ -338,21 +391,36 @@ public class DdsConfiguration {
     /**
      * @param notificationSize the notificationSize to set
      */
+    @Deprecated
     public void setNotificationSize(int notificationSize) {
         this.notificationSize = notificationSize;
     }
 
-    /**
-     * @return the pageSize
-     */
-    public int getPageSize() {
-        return pageSize;
+    public void setHttpConfig(HttpConfig httpConfig) {
+        this.httpConfig = httpConfig;
     }
 
-    /**
-     * @param pageSize the pageSize to set
-     */
-    public void setPageSize(int pageSize) {
-        this.pageSize = pageSize;
+    public HttpConfig getHttpConfig() {
+        return httpConfig;
+    }
+
+    public HttpsConfig getClientConfig() {
+        return clientConfig.orElse(null);
+    }
+
+    public AccessControlList getAccessControlList() {
+        return accessControlList;
+    }
+
+    public boolean isSign() {
+        return sign;
+    }
+
+    public KeyStoreHandler getSigningStore() {
+        return signingStore;
+    }
+
+    public String getSigningAlias() {
+        return signingAlias;
     }
 }

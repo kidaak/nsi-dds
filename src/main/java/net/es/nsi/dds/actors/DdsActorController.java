@@ -1,7 +1,3 @@
-/*
- * To change this template, choose Tools | Templates
- * and open the template in the editor.
- */
 package net.es.nsi.dds.actors;
 
 import akka.actor.ActorRef;
@@ -14,13 +10,16 @@ import java.util.List;
 import javax.xml.bind.JAXBException;
 import net.es.nsi.dds.dao.DdsConfiguration;
 import net.es.nsi.dds.messages.StartMsg;
+import net.es.nsi.dds.spring.SpringExtension;
+import net.es.nsi.dds.spring.SpringExtension.SpringExt;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeansException;
 import org.springframework.context.ApplicationContext;
-import static net.es.nsi.dds.spring.SpringExtension.SpringExtProvider;
 import org.springframework.context.ApplicationContextAware;
 
 /**
+ * This is a controller class that initializes the actor system.
  *
  * @author hacksaw
  */
@@ -28,12 +27,12 @@ public class DdsActorController implements ApplicationContextAware {
     private final Logger log = LoggerFactory.getLogger(getClass());
 
     // Configuration reader.
-    private DdsActorSystem ddsActorSystem;
-    private DdsConfiguration configReader;
-    private List<ActorEntry> actorEntries;
+    private final DdsActorSystem ddsActorSystem;
+    private final DdsConfiguration configReader;
+    private final List<ActorEntry> actorEntries;
     private ApplicationContext applicationContext;
 
-    private List<ActorRef> startList = new ArrayList<>();
+    private final List<ActorRef> startList = new ArrayList<>();
 
     public DdsActorController(DdsActorSystem ddsActorSystem, DdsConfiguration configReader, ActorEntry... entries) {
         this.ddsActorSystem = ddsActorSystem;
@@ -47,33 +46,20 @@ public class DdsActorController implements ApplicationContextAware {
     }
 
     public void init() throws IllegalArgumentException, JAXBException, FileNotFoundException {
-        /*ClassLoader myClassLoader = ClassLoader.getSystemClassLoader();
-        try {
-            Class<?> myClass = myClassLoader.loadClass("net.es.nsi.dds.actors.ConfigurationActor");
-        } catch (ClassNotFoundException ex) {
-            java.util.logging.Logger.getLogger(DdsActorController.class.getName()).log(Level.SEVERE, null, ex);
-        }*/
-
-        // Each actor must take the parameters (DdsActorController ddsActorSystem,
-        // int poolSize, long interval) which are configured via Spring.
-        int poolSize = configReader.getActorPool();
-        long interval = configReader.getAuditInterval();
-
-        ActorSystem actorSystem = ddsActorSystem.getActorSystem();
-        SpringExtProvider.get(actorSystem).initialize(applicationContext);
+        final ActorSystem actorSystem = ddsActorSystem.getActorSystem();
+        SpringExtension.SpringExtProvider.get(actorSystem).initialize(applicationContext);
+        final SpringExt ext = SpringExtension.SpringExtProvider.get(actorSystem);
 
         // Initialize the injectes actors.
-        ActorRef actor;
-        for (ActorEntry entry : actorEntries) {
+        actorEntries.forEach((ActorEntry entry) -> {
             try {
-                log.info("DdsActorController: Initializing " + entry.getActor());
-                actor = actorSystem.actorOf(SpringExtProvider.get(actorSystem).props(entry.getActor()), "discovery-" + entry.getActor());
-                startList.add(actor);
-                log.info("DdsActorController: Initialized " + entry.getActor());
+                log.info("DdsActorController: Initializing {}", entry.getActor());
+                startList.add(actorSystem.actorOf(ext.props(entry.getActor()), "discovery-" + entry.getActor()));
+                log.info("DdsActorController: Initialized {}", entry.getActor());
             } catch (Exception ex) {
-                log.error("DdsActorController: Failed to initialize " + entry.getActor(), ex);
+                log.error("DdsActorController: Failed to initialize {}", entry.getActor(), ex);
             }
-        }
+        });
     }
 
     public ActorSystem getActorSystem() {
@@ -84,7 +70,7 @@ public class DdsActorController implements ApplicationContextAware {
         return configReader;
     }
 
-    public Cancellable scheduleNotification(Object message, long delay) {
+    public Cancellable scheduleNotification(Object message, long delay) throws BeansException {
         NotificationRouter notificationRouter = (NotificationRouter) applicationContext.getBean("notificationRouter");
         Cancellable scheduleOnce = notificationRouter.scheduleNotification(message, delay);
         return scheduleOnce;
@@ -98,9 +84,9 @@ public class DdsActorController implements ApplicationContextAware {
     public void start() {
         log.info("DdsActorController: Starting discovery process...");
         StartMsg msg = new StartMsg();
-        for (ActorRef ref : startList) {
+        startList.stream().forEach((ref) -> {
             ref.tell(msg, null);
-        }
+        });
     }
     public void shutdown() {
         log.info("DdsActorController: Shutting down actor system...");

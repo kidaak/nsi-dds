@@ -4,7 +4,7 @@
  */
 package net.es.nsi.dds.schema;
 
-import net.es.nsi.dds.schema.XmlUtilities;
+import net.es.nsi.dds.util.XmlUtilities;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -12,8 +12,8 @@ import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.UUID;
 import javax.xml.bind.JAXBException;
-import net.es.nsi.dds.api.jaxb.DocumentType;
-import net.es.nsi.dds.dao.DdsParser;
+import net.es.nsi.dds.jaxb.DdsParser;
+import net.es.nsi.dds.jaxb.dds.DocumentType;
 
 /**
  *
@@ -28,12 +28,12 @@ public class FileHandling {
         File dir = new File(testDir);
         if (!dir.exists()) {
             if (!dir.mkdir()) {
-                throw new FileNotFoundException("Cannot create directory: " + testDir);                
-            }  
+                throw new FileNotFoundException("Cannot create directory: " + testDir);
+            }
         }
-        
+
         Collection<String> xmlFilenames = XmlUtilities.getXmlFilenames(cacheDir);
-        
+
         for (String filename : xmlFilenames) {
             System.out.println("cacheReadWrite: filename " + filename);
             DocumentType document;
@@ -51,11 +51,11 @@ public class FileHandling {
             }
 
             System.out.println("cacheReadWrite: documentId=" + document.getId());
-        
+
             String newFile = Paths.get(testDir, UUID.randomUUID().toString() + ".xml").toString();
-            
+
             System.out.println("cacheReadWrite: adding new file " + newFile);
-        
+
             try {
                 DdsParser.getInstance().writeDocument(newFile, document);
             }
@@ -65,7 +65,7 @@ public class FileHandling {
             }
         }
     }
-    
+
 
     @SuppressWarnings({"ResultOfMethodCallIgnored"})
     public static void main(String[] args) throws Exception {

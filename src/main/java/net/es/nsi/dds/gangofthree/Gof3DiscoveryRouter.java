@@ -4,8 +4,6 @@
  */
 package net.es.nsi.dds.gangofthree;
 
-import net.es.nsi.dds.actors.DdsActorSystem;
-import net.es.nsi.dds.messages.TimerMsg;
 import akka.actor.ActorRef;
 import akka.actor.Props;
 import akka.actor.Terminated;
@@ -14,17 +12,19 @@ import akka.routing.ActorRefRoutee;
 import akka.routing.RoundRobinRoutingLogic;
 import akka.routing.Routee;
 import akka.routing.Router;
+import com.google.common.collect.Sets;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import net.es.nsi.dds.actors.DdsActorSystem;
 import net.es.nsi.dds.dao.DdsConfiguration;
-import net.es.nsi.dds.api.jaxb.PeerURLType;
+import net.es.nsi.dds.jaxb.configuration.PeerURLType;
 import net.es.nsi.dds.messages.StartMsg;
-import net.es.nsi.dds.schema.NsiConstants;
+import net.es.nsi.dds.messages.TimerMsg;
+import net.es.nsi.dds.util.NsiConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.concurrent.duration.Duration;
@@ -36,12 +36,13 @@ import scala.concurrent.duration.Duration;
 public class Gof3DiscoveryRouter extends UntypedActor {
 
     private final Logger log = LoggerFactory.getLogger(getClass());
-    private DdsActorSystem ddsActorSystem;
-    private DdsConfiguration discoveryConfiguration;
+    private final DdsActorSystem ddsActorSystem;
+    private final DdsConfiguration discoveryConfiguration;
     private int poolSize;
     private long interval;
+    private long refresh;
     private Router router;
-    private Map<String, Gof3DiscoveryMsg> discovery = new ConcurrentHashMap<>();
+    private final Map<String, Gof3DiscoveryMsg> discovery = new ConcurrentHashMap<>();
 
     public Gof3DiscoveryRouter(DdsActorSystem ddsActorSystem, DdsConfiguration discoveryConfiguration) {
         this.ddsActorSystem = ddsActorSystem;
@@ -75,7 +76,7 @@ public class Gof3DiscoveryRouter extends UntypedActor {
         }
         else if (msg instanceof Gof3DiscoveryMsg) {
             Gof3DiscoveryMsg incoming = (Gof3DiscoveryMsg) msg;
-            
+
             log.debug("onReceive: discovery update for nsaId=" + incoming.getNsaId());
 
             discovery.put(incoming.getNsaURL(), incoming);
@@ -92,28 +93,39 @@ public class Gof3DiscoveryRouter extends UntypedActor {
             unhandled(msg);
         }
     }
-    
-    private void routeTimerEvent() {
-        Set<PeerURLType> discoveryURL = discoveryConfiguration.getDiscoveryURL();
-        Set<String> notSent = new HashSet<>(discovery.keySet());
 
-        for (PeerURLType url : discoveryURL) {
+    private void routeTimerEvent() {
+        Set<String> notSent = Sets.newHashSet(discovery.keySet());
+
+        for (PeerURLType url : discoveryConfiguration.getDiscoveryURL()) {
             if (!url.getType().equalsIgnoreCase(NsiConstants.NSI_NSA_V1)) {
                 continue;
             }
-            
+
             log.debug("routeTimerEvent: url=" + url.getValue());
-            
+
             Gof3DiscoveryMsg msg = discovery.get(url.getValue());
             if (msg == null) {
                 msg = new Gof3DiscoveryMsg();
                 msg.setNsaURL(url.getValue());
             }
 
+            if (msg.getInteration() < refresh) {
+                msg.setInteration(msg.getInteration() + 1);
+            }
+            else {
+                msg.setNsaLastModifiedTime(0L);
+                for (String top : msg.getTopologyURL()) {
+                    msg.setTopologyLastModified(top, 0L);
+                }
+
+                msg.setInteration(0);
+            }
+
             router.route(msg, getSelf());
             notSent.remove(msg.getNsaURL());
         }
-        
+
         // Clean up the entries no longer in the configuration.
         for (String url : notSent) {
             log.debug("routeTimerEvent: entry no longer needed, url=" + url);
@@ -147,5 +159,19 @@ public class Gof3DiscoveryRouter extends UntypedActor {
      */
     public void setInterval(long interval) {
         this.interval = interval;
+    }
+
+    /**
+     * @return the refresh
+     */
+    public long getRefresh() {
+        return refresh;
+    }
+
+    /**
+     * @param refresh the refresh to set
+     */
+    public void setRefresh(long refresh) {
+        this.refresh = refresh;
     }
 }

@@ -4,9 +4,11 @@ import java.util.HashMap;
 import java.util.Map;
 import javax.xml.bind.JAXBElement;
 import javax.xml.bind.JAXBException;
-import net.es.nsi.dds.api.jaxb.ErrorType;
-import net.es.nsi.dds.api.jaxb.ObjectFactory;
-import net.es.nsi.dds.dao.DdsParser;
+import net.es.nsi.dds.jaxb.DdsParser;
+import net.es.nsi.dds.jaxb.dds.ErrorType;
+import net.es.nsi.dds.jaxb.dds.ObjectFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Defines the error values for the PCE logging system.
@@ -22,6 +24,8 @@ public enum DiscoveryError {
     VERSION_NOT_SUPPORTED(104, "VERSION_NOT_SUPPORTED", "The service version requested is not supported. (%s)."),
     INTERNAL_SERVER_ERROR(105, "INTERNAL_SERVER_ERROR", "There was an internal server processing error (%s)."),
     NOT_FOUND(106, "NOT_FOUND", "Requested resources was not found (%s)."),
+    INVALID_XML(107, "INVALID_XML", "Request contained invalid XML (%s)."),
+    UNAUTHORIZED(108, "UNAUTHORIZED", "Supplied credentials did not have needed level of authorization (%s)."),
 
     DOCUMENT_EXISTS(110, "DOCUMENT_EXISTS", "There is already a registered document under provided id (%s)."),
     DOCUMENT_DOES_NOT_EXIST(111, "DOCUMENT_DOES_NOT_EXIST", "The requested document does not exist (%s)."),
@@ -35,16 +39,18 @@ public enum DiscoveryError {
     // Mark the end.
     END(999, "END", "END");
 
-    private int code;
-    private String label;
-    private String description;
+    private final static Logger log = LoggerFactory.getLogger(DiscoveryError.class);
+
+    private final int code;
+    private final String label;
+    private final String description;
 
     /**
      * A mapping between the integer code and its corresponding Status to facilitate lookup by code.
      */
     private static Map<Integer, DiscoveryError> codeToStatusMapping;
 
-    private static ObjectFactory factory = new ObjectFactory();
+    private static final ObjectFactory factory = new ObjectFactory();
 
     private DiscoveryError(int code, String label, String description) {
         this.code = code;
@@ -78,27 +84,28 @@ public enum DiscoveryError {
     public static ErrorType getErrorType(String xml) {
         ErrorType error;
         try {
-            @SuppressWarnings("unchecked")
-            JAXBElement<ErrorType> errorElement = (JAXBElement<ErrorType>) DdsParser.getInstance().stringToJaxb(xml);
-            error = errorElement.getValue();
+            error = DdsParser.getInstance().xml2Jaxb(ErrorType.class, xml);
         }
         catch (JAXBException ex) {
             error = getErrorType(INTERNAL_SERVER_ERROR, "JAXB", xml);
-
         }
         return error;
     }
 
     public static String getErrorString(DiscoveryError error, String resource, String info) {
-        ErrorType fp = getErrorType(error, resource, info);
-        JAXBElement<ErrorType> errorElement = factory.createError(fp);
-        String xml = DdsParser.getInstance().jaxbToString(errorElement);
-        return xml;
+        try {
+            ErrorType fp = getErrorType(error, resource, info);
+            JAXBElement<ErrorType> errorElement = factory.createError(fp);
+            return DdsParser.getInstance().jaxb2Xml(errorElement);
+        } catch (JAXBException ex) {
+            log.error("getErrorString: could not generate xml", ex);
+            return null;
+        }
     }
 
-    public static String getErrorString(ErrorType error) {
+    public static String getErrorString(ErrorType error) throws JAXBException {
         JAXBElement<ErrorType> errorElement = factory.createError(error);
-        String xml = DdsParser.getInstance().jaxbToString(errorElement);
+        String xml = DdsParser.getInstance().jaxb2Xml(errorElement);
         return xml;
     }
 

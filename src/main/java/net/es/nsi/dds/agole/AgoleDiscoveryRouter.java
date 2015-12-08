@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -19,15 +20,15 @@ import javax.ws.rs.NotFoundException;
 import javax.xml.bind.JAXBException;
 import net.es.nsi.dds.actors.DdsActorSystem;
 import net.es.nsi.dds.dao.DdsConfiguration;
-import net.es.nsi.dds.api.jaxb.PeerURLType;
-import net.es.nsi.dds.messages.StartMsg;
-import net.es.nsi.dds.schema.NsiConstants;
-import net.es.nsi.dds.messages.TimerMsg;
-import net.es.nsi.dds.management.jaxb.TopologyStatusType;
+import net.es.nsi.dds.jaxb.configuration.PeerURLType;
+import net.es.nsi.dds.jaxb.management.TopologyStatusType;
+import net.es.nsi.dds.management.api.ProviderStatus;
 import net.es.nsi.dds.management.logs.DdsErrors;
 import net.es.nsi.dds.management.logs.DdsLogger;
 import net.es.nsi.dds.management.logs.DdsLogs;
-import net.es.nsi.dds.management.api.ProviderStatus;
+import net.es.nsi.dds.messages.StartMsg;
+import net.es.nsi.dds.messages.TimerMsg;
+import net.es.nsi.dds.util.NsiConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.concurrent.duration.Duration;
@@ -39,19 +40,19 @@ import scala.concurrent.duration.Duration;
 public class AgoleDiscoveryRouter extends UntypedActor {
 
     private final Logger log = LoggerFactory.getLogger(getClass());
-    private DdsLogger topologyLogger = DdsLogger.getLogger();
+    private final DdsLogger topologyLogger = DdsLogger.getLogger();
     private ProviderStatus manifestStatus = null;
 
-    private DdsActorSystem ddsActorSystem;
+    private final DdsActorSystem ddsActorSystem;
     private long interval;
     private int poolSize;
     private Router router = null;
-    private Map<String, AgoleDiscoveryMsg> discovery = new ConcurrentHashMap<>();
+    private final Map<String, AgoleDiscoveryMsg> discovery = new ConcurrentHashMap<>();
 
     private TopologyManifest manifest;
 
-    private DdsConfiguration discoveryConfiguration;
-    private AgoleManifestReader manifestReader;
+    private final DdsConfiguration discoveryConfiguration;
+    private final AgoleManifestReader manifestReader;
 
     private boolean isConfigured = false;
 
@@ -63,16 +64,16 @@ public class AgoleDiscoveryRouter extends UntypedActor {
 
     @Override
     public void preStart() {
-        Set<PeerURLType> discoveryURL = discoveryConfiguration.getDiscoveryURL();
-        for (PeerURLType url : discoveryURL) {
-            if (url.getType().equalsIgnoreCase(NsiConstants.NSI_TOPOLOGY_V1)) {
-                manifestReader.setTarget(url.getValue());
-                isConfigured = true;
-                break;
-            }
-        }
+        Optional<PeerURLType> peerURL = discoveryConfiguration.getDiscoveryURL()
+                .stream()
+                .filter((url) -> url.getType().equalsIgnoreCase(NsiConstants.NSI_TOPOLOGY_V1))
+                .findFirst();
 
-        if (!isConfigured) {
+        isConfigured = peerURL.isPresent();
+        if (isConfigured) {
+            manifestReader.setTarget(peerURL.get().getValue());
+        }
+        else {
             log.info("AgoleDiscoveryRouter: No AGOLE URL provisioned so disabling audit.");
             return;
         }
@@ -115,7 +116,7 @@ public class AgoleDiscoveryRouter extends UntypedActor {
         else if (msg instanceof AgoleDiscoveryMsg) {
             AgoleDiscoveryMsg incoming = (AgoleDiscoveryMsg) msg;
 
-            log.debug("onReceive: discovery update for nsaId=" + incoming.getNsaId());
+            log.debug("onReceive: discovery update for nsaId={}", incoming.getNsaId());
 
             discovery.put(incoming.getTopologyURL(), incoming);
         }
@@ -135,7 +136,7 @@ public class AgoleDiscoveryRouter extends UntypedActor {
     }
 
     private TopologyManifest readManifest() {
-        log.debug("readManifest: starting manifest audit for " + manifestReader.getTarget());
+        log.debug("readManifest: starting manifest audit for {}", manifestReader.getTarget());
         manifestAuditStart();
         try {
             TopologyManifest manifestIfModified = manifestReader.getManifestIfModified();
@@ -143,15 +144,15 @@ public class AgoleDiscoveryRouter extends UntypedActor {
                 manifest = manifestIfModified;
             }
         } catch (NotFoundException nf) {
-            log.error("readManifest: could not find manifest file " + manifestReader.getTarget(), nf);
+            log.error("readManifest: could not find manifest file {}", manifestReader.getTarget(), nf);
             manifestAuditError();
         } catch (JAXBException jaxb) {
-            log.error("readManifest: could not parse manifest file " + manifestReader.getTarget(), jaxb);
+            log.error("readManifest: could not parse manifest file {}", manifestReader.getTarget(), jaxb);
             manifestAuditError();
         }
 
         manifestAuditSuccess();
-        log.debug("readManifest: completed manifest audit for " + manifestReader.getTarget());
+        log.debug("readManifest: completed manifest audit for {}", manifestReader.getTarget());
         return manifest;
     }
 
@@ -159,11 +160,11 @@ public class AgoleDiscoveryRouter extends UntypedActor {
         log.debug("routeTimerEvent: entering.");
         Set<String> notSent = new HashSet<>(discovery.keySet());
 
-        for (Map.Entry<String, String> entry : manifest.getEntryList().entrySet()) {
+        manifest.getEntryList().entrySet().stream().forEach((entry) -> {
             String id = entry.getKey();
             String url =  entry.getValue();
 
-            log.debug("routeTimerEvent: id=" + id + ", url=" + url);
+            log.debug("routeTimerEvent: id={}, url={}", id, url);
 
             AgoleDiscoveryMsg msg = discovery.get(url);
             if (msg == null) {
@@ -174,13 +175,13 @@ public class AgoleDiscoveryRouter extends UntypedActor {
 
             router.route(msg, getSelf());
             notSent.remove(url);
-        }
+        });
 
         // Clean up the entries no longer in the configuration.
-        for (String url : notSent) {
-            log.debug("routeTimerEvent: entry no longer needed, url=" + url);
+        notSent.stream().forEach((url) -> {
+            log.debug("routeTimerEvent: entry no longer needed, url={}", url);
             discovery.remove(url);
-        }
+        });
 
         log.debug("routeTimerEvent: exiting.");
     }

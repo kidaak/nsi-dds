@@ -8,6 +8,50 @@
     <xsd:complexType name="DdsConfigurationType">
         <xsd:annotation>
             <xsd:documentation xml:lang="en">
+    This is the NSI Document Distribution Service v1.0 configuration file.
+
+    The following XML elements are supported in this configuration file:
+
+    nsaId - The NSA identifier of the local NSA assocated with this DDS
+            instance.  This value will be used to determine which documents
+            in the DDS document space are associated with the /local URL
+            query.
+
+    documents - The local directory the DDS will monitor for document file
+                content to auto load into the DDS document space.  This
+                directory is checked for new content every auditInterval.
+
+    cache - The local directory used to store discovered documents that
+            will be reloaded after a restart of the DDS.  One reloaded an
+            audit occurs to refresh any documents with new versions available.
+
+    repository - The local directory where documents added to the local DDS are
+                 stored.  This is different from the cache directory in that the
+                 cache directory mirrors the state of the DDS document space,
+                 while the repository only holds those documents mastered
+                 ("owned") by this DDS server instance.
+
+    auditInterval - The interval (in seconds) the DDS will audit all peer DDS
+                    servers, Gof3 NSA and topology documents, or A-GOLE
+                    topology. [No longer used, see beans.xml]
+
+    expiryInterval - The number of seconds the DDS will maintain a document
+                     in the local space after the document's lifetime has
+                     been reached.  Default is 24 hours.
+
+    actorPool - The number of actors to instantiate per discovery type (DDS,
+                Gof3, A-GOLE). [No longer used, see beans.xml]
+
+    baseURL - The base URL of the local DDS service that will be used when
+              registering with peer DDS services.  Is only needed if a peerURL
+              type of "application/vnd.ogf.nsi.dds.v1+xml" is configured.
+
+    peerURL - Lists peer data sources for the DDS service to utilize for
+              document discovery.  The following type of peerURL are supported:
+
+              application/vnd.ogf.nsi.dds.v1+xml - A peer DDS server.
+              application/vnd.ogf.nsi.nsa.v1+xml - A Gof3 NSA.
+              application/vnd.ogf.nsi.topology.v1+xml - The Automated GOLE topology discovery.
             </xsd:documentation>
         </xsd:annotation>
         <xsd:sequence>
@@ -15,13 +59,130 @@
             <xsd:element name="documents" type="xsd:string" minOccurs="0"/>
             <xsd:element name="cache" type="xsd:string" minOccurs="0"/>
             <xsd:element name="repository" type="xsd:string" minOccurs="0"/>
-            <xsd:element name="auditInterval" type="xsd:long"/>
-            <xsd:element name="expiryInterval" type="xsd:long"/>
-            <xsd:element name="actorPool" type="xsd:int"/>
+            <xsd:element name="auditInterval" type="xsd:long" minOccurs="0" />
+            <xsd:element name="expiryInterval" type="xsd:long" default="86400" />
+            <xsd:element name="actorPool" type="xsd:int" minOccurs="0" />
             <xsd:element name="baseURL" type="xsd:anyURI"/>
             <xsd:element name="notificationSize" type="xsd:int" default="10" />
-            <xsd:element name="pageSize" type="xsd:int" default="50" />
+            <xsd:element name="server" type="tns:ServerType" minOccurs="0" />
+            <xsd:element name="client" type="tns:SecureType" minOccurs="0" />
+            <xsd:element name="signature" type="tns:SignatureStoreType" minOccurs="0" />
+            <xsd:element name="accessControl" type="tns:AccessControlType" minOccurs="0" />
             <xsd:element name="peerURL" type="tns:PeerURLType" minOccurs="0" maxOccurs="unbounded"/>
+        </xsd:sequence>
+    </xsd:complexType>
+
+    <xsd:complexType name="ServerType">
+        <xsd:annotation>
+            <xsd:documentation xml:lang="en">
+            </xsd:documentation>
+        </xsd:annotation>
+        <xsd:sequence>
+            <xsd:element name="secure" type="tns:SecureType" minOccurs="0"/>
+            <xsd:element name="static" type="tns:StaticType" minOccurs="0"/>
+        </xsd:sequence>
+        <xsd:attribute   name="address"     use="required" type="xsd:string" />
+        <xsd:attribute   name="port"        use="required" type="xsd:string" />
+        <xsd:attribute   name="packageName" use="required" type="xsd:string" />
+    </xsd:complexType>
+
+    <xsd:complexType name="SecureType">
+        <xsd:annotation>
+            <xsd:documentation xml:lang="en">
+            </xsd:documentation>
+        </xsd:annotation>
+        <xsd:sequence>
+            <xsd:element name="keyStore" type="tns:KeyStoreType" />
+            <xsd:element name="trustStore" type="tns:KeyStoreType" />
+        </xsd:sequence>
+        <xsd:attribute   name="production" type="xsd:boolean" default="true"/>
+    </xsd:complexType>
+
+    <xsd:complexType name="KeyStoreType">
+        <xsd:annotation>
+            <xsd:documentation xml:lang="en">
+            </xsd:documentation>
+        </xsd:annotation>
+        <xsd:sequence>
+            <xsd:element name="file" type="xsd:string" />
+            <xsd:element name="password" type="xsd:string" />
+        </xsd:sequence>
+        <xsd:attribute   name="type" type="xsd:string" default="JKS"/>
+    </xsd:complexType>
+    
+    <xsd:complexType name="SignatureStoreType">
+        <xsd:annotation>
+            <xsd:documentation xml:lang="en">
+            </xsd:documentation>
+        </xsd:annotation>
+        <xsd:complexContent>
+            <xsd:extension base="tns:KeyStoreType">
+                <xsd:sequence>
+                    <xsd:element name="alias" type="xsd:string" />
+                </xsd:sequence>
+                <xsd:attribute name="sign" type="xsd:boolean" default="false"/>
+            </xsd:extension>
+        </xsd:complexContent>
+    </xsd:complexType>
+
+    <xsd:complexType name="AccessControlType">
+        <xsd:annotation>
+            <xsd:documentation xml:lang="en">
+            </xsd:documentation>
+        </xsd:annotation>
+        <xsd:sequence>
+            <xsd:element name="rule" type="tns:RuleType" minOccurs="0" maxOccurs="unbounded"/>
+        </xsd:sequence>
+        <xsd:attribute   name="enabled" type="xsd:boolean" default="false"/>
+    </xsd:complexType>
+
+    <xsd:complexType name="RuleType">
+        <xsd:annotation>
+            <xsd:documentation xml:lang="en">
+            </xsd:documentation>
+        </xsd:annotation>
+        <xsd:sequence>
+            <xsd:element name="dn"    type="tns:DistinguishedNameType" minOccurs="0" maxOccurs="unbounded"/>
+            <xsd:element name="nsaId" type="xsd:anyURI" minOccurs="0" maxOccurs="unbounded"/>
+        </xsd:sequence>
+        <xsd:attribute  name="access"  type="tns:AccessControlPermission"  default="read"/>
+    </xsd:complexType>
+
+    <xsd:complexType name="DistinguishedNameType">
+        <xsd:annotation>
+            <xsd:documentation xml:lang="en">
+            </xsd:documentation>
+        </xsd:annotation>
+        <xsd:simpleContent>
+            <xsd:extension  base="xsd:string" />
+        </xsd:simpleContent>
+    </xsd:complexType>
+
+    <xsd:simpleType name="AccessControlPermission">
+        <xsd:annotation>
+            <xsd:documentation xml:lang="en">
+                read - grants peer read-only access to documents within the document space.
+                write - grants read/write access to documents within the document space owned by specific NSA.
+                admin - grants read/write/admin access to the document space.
+
+                A peer DDS server is granted "write" access to its own nsaId for the purpose of subcription management.
+            </xsd:documentation>
+        </xsd:annotation>
+        <xsd:restriction base="xsd:string">
+            <xsd:enumeration  value="read"/>
+            <xsd:enumeration  value="write"/>
+            <xsd:enumeration  value="admin"/>
+        </xsd:restriction>
+    </xsd:simpleType>
+
+    <xsd:complexType name="StaticType">
+        <xsd:annotation>
+            <xsd:documentation xml:lang="en">
+            </xsd:documentation>
+        </xsd:annotation>
+        <xsd:sequence>
+            <xsd:element name="path" type="xsd:string" />
+            <xsd:element name="relative" type="xsd:string" />
         </xsd:sequence>
     </xsd:complexType>
 
@@ -33,3 +194,4 @@
         </xsd:simpleContent>
     </xsd:complexType>
 </xsd:schema>
+
